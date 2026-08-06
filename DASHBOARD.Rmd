@@ -1,0 +1,1191 @@
+---
+title: "University Student Survey — Executive Dashboard"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    theme: flatly
+---
+
+```{=html}
+<style>
+body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+.navbar { font-weight: 600; letter-spacing: 0.02em; }
+.chart-title {
+  font-weight: 700 !important;
+  font-size: 15px !important;
+  color: #14202E !important;
+  border-bottom: 2px solid #E4E8EC;
+}
+.value-box .value { font-weight: 700 !important; font-size: 30px !important; }
+.value-box .caption { font-weight: 500 !important; opacity: 0.93; }
+</style>
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+required_pkgs <- c("flexdashboard", "tidyverse", "readxl", "janitor",
+                    "plotly", "DT", "scales")
+for (pkg in required_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+}
+
+library(flexdashboard)
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(plotly)
+library(DT)
+library(scales)
+
+set.seed(2026)
+
+# ================================================================ PALETTE ===
+INK   <- "#14202E"
+MUTED <- "#7A8794"
+LOW   <- "#B3202C"
+MID   <- "#E8B33C"
+HIGH  <- "#12715A"
+
+pillar_palette <- c(
+  "Facilities & Campus" = "#2C5F8A",
+  "Academic Quality"    = "#12715A",
+  "Digital Readiness"   = "#7B5C9E",
+  "Financial Security"  = "#C75B3F",
+  "Health & Wellbeing"  = "#47808C",
+  "Support Services"    = "#D9A03C",
+  "Career Readiness"    = "#8C4A83",
+  "General Experience"  = "#7A8794"
+)
+
+band_colors_5 <- c("Critical" = "#8C1720", "At risk" = "#C75B3F",
+                    "Stable" = "#D9B23C", "Thriving" = "#5FA88E",
+                    "Excelling" = "#12715A")
+
+# ============================================================================
+# LOAD & CLEAN
+# ============================================================================
+
+dat <- read_excel("Book1.xlsx") %>% clean_names()
+
+dat <- dat %>%
+  select(-matches("name|respondent_id|timestamp|email|phone|enrollment|roll_no|student_id",
+                  ignore.case = TRUE))
+
+dat <- dat[rowMeans(is.na(dat)) <= 0.6, ]
+dat <- dat[!duplicated(dat), ]
+
+sector_col <- grep("sector|institution_type", names(dat), value = TRUE)[1]
+gender_col <- grep("gender|sex", names(dat), value = TRUE)[1]
+univ_col   <- grep("university_reported|university|institution", names(dat), value = TRUE)[1]
+field_col  <- grep("field_group|discipline|faculty|program|field", names(dat), value = TRUE)[1]
+age_col    <- grep("^q.*age|^age", names(dat), value = TRUE)[1]
+
+if (!is.na(sector_col)) {
+  s <- tolower(trimws(as.character(dat[[sector_col]])))
+  s[grepl("govt|government|public|federal", s)] <- "Public"
+  s[grepl("pvt|private", s)] <- "Private"
+  s[!s %in% c("Public", "Private")] <- NA
+  dat$sector <- s
+} else {
+  dat$sector <- NA
+}
+
+if (!is.na(gender_col)) {
+  g <- tolower(trimws(as.character(dat[[gender_col]])))
+  g[g %in% c("m", "male")] <- "Male"
+  g[g %in% c("f", "female")] <- "Female"
+  g[!g %in% c("Male", "Female")] <- NA
+  dat$gender <- g
+} else {
+  dat$gender <- NA
+}
+
+if (!is.na(univ_col)) {
+  dat$university <- str_to_title(str_squish(as.character(dat[[univ_col]])))
+  dat$university[dat$university %in% c("", "Na", "N/A")] <- NA
+} else {
+  dat$university <- NA
+}
+
+if (!is.na(field_col)) {
+  dat$field <- str_to_title(str_squish(as.character(dat[[field_col]])))
+  dat$field[dat$field %in% c("", "Na", "N/A")] <- NA
+} else {
+  dat$field <- NA
+}
+
+if (!is.na(age_col)) {
+  dat$age <- suppressWarnings(as.numeric(dat[[age_col]]))
+  dat$age[dat$age < 15 | dat$age > 60] <- NA
+} else {
+  dat$age <- NA
+}
+
+# ============================================================================
+# STRICT LIKERT DETECTION
+# ============================================================================
+
+lk <- c("strongly disagree" = 1, "disagree" = 2, "neutral" = 3,
+        "neither agree nor disagree" = 3, "agree" = 4, "strongly agree" = 5,
+        "very dissatisfied" = 1, "dissatisfied" = 2, "satisfied" = 4,
+        "very satisfied" = 5, "very poor" = 1, "poor" = 2, "average" = 3,
+        "good" = 4, "very good" = 5, "excellent" = 5, "fair" = 3,
+        "never" = 1, "rarely" = 2, "sometimes" = 3, "often" = 4, "always" = 5,
+        "not at all" = 1, "slightly" = 2, "moderately" = 3, "very" = 4,
+        "extremely" = 5)
+
+scale_words <- names(lk)[!grepl("^[0-9]+$", names(lk))]
+
+BLOCK_PATTERN <- paste0(
+  "sibling|semester|^age|_age$|year_of|number|count|cgpa|gpa|marks|",
+  "income|amount|hours|province|district|city|university|institution|",
+  "gender|sex|field|program|degree|sector|status|category|type"
+)
+
+norm_vals <- function(x) {
+  v <- tolower(trimws(as.character(x)))
+  v[v %in% c("", "na", "n/a", "-", "none", "nil", "null")] <- NA
+  v
+}
+
+item_cols <- character(0)
+
+for (cl in names(dat)) {
+  if (cl %in% c("sector", "gender", "age", "university", "field")) next
+  if (grepl(BLOCK_PATTERN, cl)) next
+  if (grepl("_num$", cl)) next
+
+  x <- dat[[cl]]
+  if (!is.character(x)) next
+
+  v <- norm_vals(x)
+  nn <- sum(!is.na(v))
+  if (nn < 50) next
+
+  uniq <- unique(v[!is.na(v)])
+  if (length(uniq) > 12) next
+  if (!any(uniq %in% scale_words)) next
+
+  mapped <- unname(lk[v])
+  coverage <- sum(!is.na(mapped)) / nn
+  if (coverage < 0.80) next
+
+  newcol <- paste0(cl, "_num")
+  dat[[newcol]] <- as.numeric(mapped)
+  item_cols <- c(item_cols, newcol)
+}
+
+# ============================================================================
+# PILLARS BY THEME
+# ============================================================================
+
+pillar_defs <- list(
+  "Facilities & Campus" = "librar|washroom|canteen|cafeteria|sport|recreation|transport|classroom|lab|wifi|wi_fi|internet|multimedia|first_aid|hostel|building|parking|water|clean|hygien|campus|infrastructure|facilit",
+  "Academic Quality"    = "syllabus|curricul|exam|grading|assess|teacher|faculty|workload|theory|practical|content|lecture|teaching|course|research|academic|impartial|feedback|knowledge",
+  "Digital Readiness"   = "digital|online|computer|device|software|technolog|lms|e_learn|laptop|smartphone",
+  "Financial Security"  = "financ|fee|expense|cost|money|scholarship|afford|stipend|tuition",
+  "Health & Wellbeing"  = "health|stress|sleep|wellbeing|well_being|mental|anxiet|diet|exercise|illness",
+  "Support Services"    = "support|guidance|advisor|mentor|counsel|help|administration|complaint|service",
+  "Career Readiness"    = "career|internship|employ|job|prepare|skill|placement|entrepreneur|future"
+)
+
+assign_pillar <- function(col) {
+  nm <- tolower(col)
+  for (p in names(pillar_defs)) {
+    if (grepl(pillar_defs[[p]], nm)) return(p)
+  }
+  "General Experience"
+}
+
+item_map <- tibble(var = item_cols) %>%
+  mutate(Pillar = map_chr(var, assign_pillar))
+
+pillar_counts <- item_map %>% count(Pillar, name = "n_items")
+valid_pillars <- pillar_counts$Pillar[pillar_counts$n_items >= 2]
+item_map <- item_map %>% filter(Pillar %in% valid_pillars)
+
+row_index <- function(d, cols) {
+  m <- suppressWarnings(apply(as.matrix(d[, cols, drop = FALSE]), 2, as.numeric))
+  if (is.null(dim(m))) m <- matrix(m, ncol = 1)
+  o <- rowMeans(m, na.rm = TRUE) * 20
+  o[rowSums(!is.na(m)) == 0] <- NA_real_
+  pmin(100, pmax(0, o))
+}
+
+pillar_vars <- character(0)
+PILLAR_LABEL <- character(0)
+
+for (p in valid_pillars) {
+  cols_p <- item_map$var[item_map$Pillar == p]
+  vname <- paste0("pil_", make.names(p))
+  dat[[vname]] <- row_index(dat, cols_p)
+  if (sum(!is.na(dat[[vname]])) >= 50) {
+    pillar_vars <- c(pillar_vars, vname)
+    PILLAR_LABEL[vname] <- p
+  }
+}
+
+if (length(item_map$var) > 0) {
+  dat$idx_overall <- row_index(dat, item_map$var)
+} else {
+  dat$idx_overall <- NA_real_
+}
+
+if (length(pillar_vars) > 0) {
+  pillar_vars <- pillar_vars[order(-sapply(pillar_vars,
+                                            function(v) mean(dat[[v]], na.rm = TRUE)))]
+}
+
+PILLARS <- pillar_vars
+LAB <- PILLAR_LABEL
+
+rate_word <- function(m) {
+  case_when(m >= 80 ~ "Very good", m >= 60 ~ "Good",
+            m >= 40 ~ "Needs work", TRUE ~ "Poor")
+}
+
+# ---- Headline numbers ------------------------------------------------------
+total_students <- nrow(dat)
+avg_overall <- if (sum(!is.na(dat$idx_overall)) > 0) {
+  round(mean(dat$idx_overall, na.rm = TRUE), 1)
+} else NA
+
+n_pillars <- length(PILLARS)
+n_items_total <- nrow(item_map)
+
+uni_counts <- dat %>% filter(!is.na(university)) %>% count(university)
+n_institutions <- sum(uni_counts$n >= 5)
+
+# ---- Pillar summary with spread -------------------------------------------
+pillar_stats <- NULL
+if (length(PILLARS) > 0) {
+  pillar_stats <- map_dfr(PILLARS, function(v) {
+    x <- dat[[v]][!is.na(dat[[v]])]
+    tibble(Pillar = LAB[[v]],
+           Items = sum(item_map$Pillar == LAB[[v]]),
+           Students = length(x),
+           Index = round(mean(x), 1),
+           Q1 = round(quantile(x, 0.25), 1),
+           Median = round(median(x), 1),
+           Q3 = round(quantile(x, 0.75), 1))
+  }) %>%
+    mutate(`Gap to overall` = round(Index - avg_overall, 1),
+           Rating = rate_word(Index)) %>%
+    arrange(desc(Index))
+}
+
+pillar_tbl <- NULL
+if (!is.null(pillar_stats)) {
+  pillar_tbl <- pillar_stats %>%
+    select(Pillar, Items, Students, Index, `Gap to overall`, Rating)
+}
+
+best_pillar  <- if (!is.null(pillar_stats)) pillar_stats$Pillar[1] else "N/A"
+best_score   <- if (!is.null(pillar_stats)) pillar_stats$Index[1] else NA
+worst_pillar <- if (!is.null(pillar_stats)) pillar_stats$Pillar[nrow(pillar_stats)] else "N/A"
+worst_score  <- if (!is.null(pillar_stats)) pillar_stats$Index[nrow(pillar_stats)] else NA
+
+# ---- Risk segmentation -----------------------------------------------------
+risk_tbl <- NULL
+pct_at_risk <- NA
+if (sum(!is.na(dat$idx_overall)) >= 50) {
+  qs <- unique(quantile(dat$idx_overall, probs = c(.2, .4, .6, .8),
+                         na.rm = TRUE, type = 7))
+  if (length(qs) == 4) {
+    dat$risk_band <- cut(dat$idx_overall, breaks = c(-Inf, qs, Inf),
+                          labels = c("Critical", "At risk", "Stable",
+                                     "Thriving", "Excelling"),
+                          include.lowest = TRUE)
+  } else {
+    dat$risk_band <- cut(dat$idx_overall,
+                          breaks = c(-Inf, median(dat$idx_overall, na.rm = TRUE), Inf),
+                          labels = c("Below median", "Above median"),
+                          include.lowest = TRUE)
+  }
+  risk_tbl <- dat %>%
+    filter(!is.na(risk_band)) %>%
+    count(Segment = risk_band) %>%
+    mutate(Share = round(100 * n / sum(n), 1))
+
+  low_bands <- c("Critical", "At risk", "Below median")
+  pct_at_risk <- round(sum(risk_tbl$Share[risk_tbl$Segment %in% low_bands]), 1)
+}
+
+# ---- Sample composition ----------------------------------------------------
+comp_rows <- list()
+if (sum(!is.na(dat$sector)) >= 20) {
+  comp_rows[["Public sector"]]  <- round(100 * mean(dat$sector == "Public", na.rm = TRUE), 1)
+  comp_rows[["Private sector"]] <- round(100 * mean(dat$sector == "Private", na.rm = TRUE), 1)
+}
+if (sum(!is.na(dat$gender)) >= 20) {
+  comp_rows[["Female"]] <- round(100 * mean(dat$gender == "Female", na.rm = TRUE), 1)
+  comp_rows[["Male"]]   <- round(100 * mean(dat$gender == "Male", na.rm = TRUE), 1)
+}
+comp_tbl <- NULL
+if (length(comp_rows) > 0) {
+  comp_tbl <- tibble(Group = names(comp_rows),
+                     `Share of sample (%)` = unlist(comp_rows))
+}
+
+# ---- Institution league table ----------------------------------------------
+uni_tbl <- NULL
+if (sum(!is.na(dat$university)) >= 50 && sum(!is.na(dat$idx_overall)) >= 50) {
+  uni_tbl <- dat %>%
+    filter(!is.na(university), !is.na(idx_overall)) %>%
+    group_by(Institution = university) %>%
+    summarise(Students = n(), Score = round(mean(idx_overall), 1), .groups = "drop") %>%
+    filter(Students >= 5) %>%
+    arrange(desc(Score)) %>%
+    mutate(Rank = row_number(), Rating = rate_word(Score)) %>%
+    select(Rank, Institution, Students, Score, Rating)
+}
+
+# ---- Field ranking ----------------------------------------------------------
+field_tbl <- NULL
+if (sum(!is.na(dat$field)) >= 50 && sum(!is.na(dat$idx_overall)) >= 50) {
+  field_tbl <- dat %>%
+    filter(!is.na(field), !is.na(idx_overall)) %>%
+    group_by(Field = field) %>%
+    summarise(Students = n(), Score = round(mean(idx_overall), 1), .groups = "drop") %>%
+    filter(Students >= 15) %>%
+    arrange(desc(Score)) %>%
+    mutate(Rating = rate_word(Score))
+}
+
+# ---- Field x Pillar matrix (largest fields, for readability) ----------------
+fp_matrix <- NULL
+if (!is.null(field_tbl) && nrow(field_tbl) >= 3 && length(PILLARS) >= 2) {
+  top_fields <- field_tbl %>% slice_max(Students, n = 8, with_ties = FALSE) %>% pull(Field)
+  fp_matrix <- map_dfr(PILLARS, function(v) {
+    dat %>%
+      filter(field %in% top_fields, !is.na(.data[[v]])) %>%
+      group_by(Field = field) %>%
+      summarise(Score = round(mean(.data[[v]]), 1), N = n(), .groups = "drop") %>%
+      filter(N >= 10) %>%
+      mutate(Pillar = LAB[[v]])
+  })
+  if (nrow(fp_matrix) < 4) fp_matrix <- NULL
+}
+
+# ---- Correlation matrix ------------------------------------------------------
+CM <- NULL
+if (length(PILLARS) >= 2) {
+  CM <- cor(dat[, PILLARS], use = "pairwise.complete.obs")
+  dimnames(CM) <- list(unname(LAB[PILLARS]), unname(LAB[PILLARS]))
+}
+
+# ---- Gender comparison across pillars ----------------------------------------
+gender_pillar <- NULL
+if (sum(!is.na(dat$gender)) >= 50 && length(PILLARS) >= 2) {
+  gender_pillar <- map_dfr(PILLARS, function(v) {
+    dat %>%
+      filter(!is.na(gender), !is.na(.data[[v]])) %>%
+      group_by(Gender = gender) %>%
+      summarise(Score = round(mean(.data[[v]]), 1), N = n(), .groups = "drop") %>%
+      filter(N >= 25) %>%
+      mutate(Pillar = LAB[[v]])
+  })
+  if (nrow(gender_pillar) < 4) gender_pillar <- NULL
+}
+
+# ============================================================================
+# ITEM-LEVEL DIAGNOSTICS
+# ============================================================================
+
+clean_item_label <- function(col) {
+  s <- col
+  s <- str_remove(s, "_num$")
+  s <- str_remove(s, "^q[0-9]+_[0-9]+_")
+  s <- str_remove(s, "^[0-9]+_")
+  s <- str_replace_all(s, "_", " ")
+  s <- str_squish(s)
+  s <- str_to_sentence(s)
+  str_trunc(s, 44)
+}
+
+item_diag <- NULL
+if (nrow(item_map) >= 3) {
+
+  item_diag <- item_map %>%
+    mutate(
+      Statement = map_chr(var, clean_item_label),
+      N         = map_int(var, ~ sum(!is.na(dat[[.x]]))),
+      Mean      = map_dbl(var, ~ mean(dat[[.x]], na.rm = TRUE)),
+      Pct_agree = map_dbl(var, function(cl) {
+        v <- dat[[cl]]; v <- v[!is.na(v)]
+        if (!length(v)) NA_real_ else mean(v >= 4)
+      }),
+      Pct_disagree = map_dbl(var, function(cl) {
+        v <- dat[[cl]]; v <- v[!is.na(v)]
+        if (!length(v)) NA_real_ else mean(v <= 2)
+      }),
+      `Net agreement` = round((Pct_agree - Pct_disagree) * 100, 1),
+      Performance = round(Mean * 20, 1),
+      Importance  = map_dbl(var, function(cl) {
+        both <- !is.na(dat[[cl]]) & !is.na(dat$idx_overall)
+        if (sum(both) < 20) return(NA_real_)
+        tryCatch(cor(dat[[cl]][both], dat$idx_overall[both]),
+                 error = function(e) NA_real_)
+      })
+    ) %>%
+    filter(N >= 50, !is.na(`Net agreement`), !is.na(Importance))
+
+  if (nrow(item_diag) < 3) item_diag <- NULL
+}
+
+avg_perf <- if (!is.null(item_diag)) mean(item_diag$Performance, na.rm = TRUE) else NA
+avg_imp  <- if (!is.null(item_diag)) mean(item_diag$Importance, na.rm = TRUE) else NA
+
+if (!is.null(item_diag)) {
+  item_diag <- item_diag %>%
+    mutate(Action = case_when(
+      Performance <  avg_perf & Importance >= avg_imp ~ "Fix first",
+      Performance >= avg_perf & Importance >= avg_imp ~ "Protect strength",
+      Performance <  avg_perf & Importance <  avg_imp ~ "Monitor",
+      TRUE ~ "Maintain"
+    ))
+}
+
+top_statement   <- if (!is.null(item_diag)) item_diag$Statement[which.max(item_diag$Performance)] else "N/A"
+worst_statement <- if (!is.null(item_diag)) item_diag$Statement[which.min(item_diag$Performance)] else "N/A"
+n_fix_first     <- if (!is.null(item_diag)) sum(item_diag$Action == "Fix first") else 0
+```
+
+# Executive Summary
+
+## Row {data-height="125"}
+
+### Students Analysed
+
+```{r}
+valueBox(comma(total_students), icon = "fa-users", color = INK)
+```
+
+### Institutions (5+ responses)
+
+```{r}
+valueBox(comma(n_institutions), icon = "fa-university", color = MUTED)
+```
+
+### Overall Student Index
+
+```{r}
+valueBox(ifelse(is.na(avg_overall), "N/A", paste0(avg_overall, " / 100")),
+         icon = "fa-star", color = HIGH)
+```
+
+### Survey Statements
+
+```{r}
+valueBox(n_items_total, icon = "fa-list-ul", color = MID)
+```
+
+## Row {data-height="475"}
+
+### Pillar Scorecard
+
+```{r}
+if (!is.null(pillar_tbl)) {
+  datatable(pillar_tbl, rownames = FALSE,
+            options = list(dom = "t", pageLength = 20, scrollX = TRUE)) %>%
+    formatStyle("Index",
+                background = styleColorBar(c(0, 100), "#CFE3ED"),
+                backgroundSize = "98% 62%",
+                backgroundRepeat = "no-repeat",
+                backgroundPosition = "left",
+                fontWeight = "bold") %>%
+    formatStyle("Gap to overall",
+                color = styleInterval(0, c(LOW, HIGH)), fontWeight = "bold") %>%
+    formatStyle("Rating",
+                backgroundColor = styleEqual(
+                  c("Poor", "Needs work", "Good", "Very good"),
+                  c("#F6D9DA", "#FBEAD2", "#DCEEE7", "#C8E6D9")))
+} else {
+  datatable(data.frame(Message = "Not enough rating statements to build pillars"),
+            rownames = FALSE, options = list(dom = "t"))
+}
+```
+
+### Student Risk Segmentation
+
+```{r}
+if (!is.null(risk_tbl)) {
+  seg_colors <- if (all(risk_tbl$Segment %in% names(band_colors_5))) {
+    unname(band_colors_5[as.character(risk_tbl$Segment)])
+  } else {
+    c("#B3202C", "#12715A")
+  }
+  plot_ly(risk_tbl, labels = ~Segment, values = ~n, type = "pie", hole = 0.55,
+          sort = FALSE, direction = "clockwise",
+          marker = list(colors = seg_colors, line = list(color = "white", width = 2)),
+          textinfo = "label+percent", textposition = "outside",
+          hovertemplate = "%{label}<br>%{value} students (%{percent})<extra></extra>") %>%
+    layout(showlegend = TRUE,
+           legend = list(orientation = "v", x = 1.02, y = 0.5),
+           margin = list(t = 30, b = 30, l = 30, r = 30),
+           annotations = list(text = paste0("<b>", comma(sum(risk_tbl$n)), "</b><br>students"),
+                              showarrow = FALSE, font = list(size = 14)))
+} else {
+  plotly_empty() %>% layout(title = "Not enough data for risk segmentation")
+}
+```
+
+## Row {data-height="240"}
+
+### Sample Composition
+
+```{r}
+if (!is.null(comp_tbl)) {
+  datatable(comp_tbl, rownames = FALSE,
+            options = list(dom = "t", pageLength = 10)) %>%
+    formatStyle("Share of sample (%)",
+                background = styleColorBar(c(0, 100), "#CFE3ED"),
+                backgroundSize = "98% 70%",
+                backgroundRepeat = "no-repeat",
+                backgroundPosition = "left")
+} else {
+  datatable(data.frame(Message = "Demographic breakdown not available in this dataset"),
+            rownames = FALSE, options = list(dom = "t"))
+}
+```
+
+### Overall Index — How Students Are Spread
+
+```{r}
+if (sum(!is.na(dat$idx_overall)) >= 50) {
+
+  hist_vals <- dat$idx_overall[!is.na(dat$idx_overall)]
+
+  plot_ly(x = hist_vals, type = "histogram",
+          nbinsx = 28,
+          marker = list(color = "#2C5F8A", opacity = 0.85,
+                        line = list(color = "white", width = 1)),
+          hovertemplate = "Index %{x}<br>%{y} students<extra></extra>") %>%
+    layout(
+      xaxis = list(title = "Overall student index (0-100)", range = c(0, 100), dtick = 20),
+      yaxis = list(title = "Students"),
+      margin = list(l = 60, r = 30, t = 20, b = 50),
+      shapes = list(
+        list(type = "line", x0 = avg_overall, x1 = avg_overall,
+             yref = "paper", y0 = 0, y1 = 1,
+             line = list(color = LOW, width = 2, dash = "dash"))
+      ),
+      annotations = list(
+        list(x = avg_overall, y = 1.04, xref = "x", yref = "paper",
+             text = paste0("<b>Average ", avg_overall, "</b>"),
+             showarrow = FALSE, font = list(size = 11, color = LOW))
+      ))
+} else {
+  plotly_empty() %>% layout(title = "Not enough data for this chart")
+}
+```
+
+# Statement Diagnostics
+
+## Row {data-height="580"}
+
+### Net Agreement by Statement — Ranked Weakest to Strongest
+
+```{r}
+if (!is.null(item_diag)) {
+
+  plot_data <- item_diag %>% arrange(`Net agreement`)
+
+  if (nrow(plot_data) > 22) {
+    plot_data <- bind_rows(
+      plot_data %>% slice_head(n = 11),
+      plot_data %>% slice_tail(n = 11)
+    ) %>% arrange(`Net agreement`)
+  }
+
+  plot_data <- plot_data %>%
+    mutate(Statement = factor(Statement, levels = Statement))
+
+  rng <- max(abs(plot_data$`Net agreement`), na.rm = TRUE)
+  rng <- ceiling((rng + 14) / 10) * 10
+
+  plot_ly(plot_data,
+          x = ~`Net agreement`, y = ~Statement,
+          type = "bar", orientation = "h",
+          marker = list(color = ~`Net agreement`,
+                        colorscale = list(list(0, LOW), list(0.5, "#F2F2F2"), list(1, HIGH)),
+                        cmin = -rng, cmax = rng, showscale = FALSE,
+                        line = list(color = "white", width = 0.5)),
+          text = ~sprintf("%+.0f%%", `Net agreement`),
+          textposition = "outside",
+          textfont = list(size = 11, color = INK),
+          hovertemplate = paste0("<b>%{y}</b><br>Net agreement: %{x:.1f}%",
+                                 "<br>Theme: %{customdata}<extra></extra>"),
+          customdata = ~Pillar) %>%
+    layout(
+      xaxis = list(title = "Net agreement  (% who agree minus % who disagree)",
+                   range = c(-rng, rng), autorange = FALSE,
+                   zeroline = TRUE, zerolinewidth = 2, zerolinecolor = "#333333",
+                   ticksuffix = "%"),
+      yaxis = list(title = "", automargin = TRUE, tickfont = list(size = 11)),
+      margin = list(l = 310, r = 70, t = 20, b = 60),
+      bargap = 0.3)
+} else {
+  plotly_empty() %>% layout(title = "Not enough rating statements for this chart")
+}
+```
+
+## Row {data-height="470"}
+
+### Priority Matrix — Where to Act First
+
+```{r}
+if (!is.null(item_diag)) {
+
+  pal_use <- pillar_palette[names(pillar_palette) %in% unique(item_diag$Pillar)]
+  if (length(pal_use) == 0) pal_use <- "Set2"
+
+  plot_ly(item_diag, x = ~Performance, y = ~Importance,
+          color = ~Pillar, colors = unname(pal_use),
+          type = "scatter", mode = "markers", text = ~Statement,
+          marker = list(size = 12, opacity = 0.88,
+                        line = list(color = "white", width = 1.2)),
+          hovertemplate = paste0("<b>%{text}</b><br>Performance: %{x:.0f}/100",
+                                 "<br>Importance: %{y:.2f}<extra></extra>")) %>%
+    layout(
+      xaxis = list(title = "Performance  (statement score, 0-100)", automargin = TRUE),
+      yaxis = list(title = "Importance  (link to overall index)", automargin = TRUE),
+      legend = list(orientation = "h", y = -0.25, font = list(size = 10)),
+      margin = list(l = 70, r = 30, t = 40, b = 100),
+      shapes = list(
+        list(type = "line", xref = "x", x0 = avg_perf, x1 = avg_perf,
+             yref = "paper", y0 = 0, y1 = 1,
+             line = list(dash = "dot", color = MUTED, width = 1.2)),
+        list(type = "line", yref = "y", y0 = avg_imp, y1 = avg_imp,
+             xref = "paper", x0 = 0, x1 = 1,
+             line = list(dash = "dot", color = MUTED, width = 1.2))
+      ),
+      annotations = list(
+        list(x = 0.02, y = 0.98, xref = "paper", yref = "paper",
+             text = "<b>FIX FIRST</b>", showarrow = FALSE,
+             font = list(size = 10, color = LOW), xanchor = "left"),
+        list(x = 0.98, y = 0.98, xref = "paper", yref = "paper",
+             text = "<b>PROTECT STRENGTH</b>", showarrow = FALSE,
+             font = list(size = 10, color = HIGH), xanchor = "right"),
+        list(x = 0.02, y = 0.02, xref = "paper", yref = "paper",
+             text = "<b>MONITOR</b>", showarrow = FALSE,
+             font = list(size = 10, color = MUTED), xanchor = "left"),
+        list(x = 0.98, y = 0.02, xref = "paper", yref = "paper",
+             text = "<b>MAINTAIN</b>", showarrow = FALSE,
+             font = list(size = 10, color = MUTED), xanchor = "right")
+      ))
+} else {
+  plotly_empty() %>% layout(title = "Not enough rating statements for this chart")
+}
+```
+
+### Recommended Action per Statement
+
+```{r}
+if (!is.null(item_diag)) {
+  action_tbl <- item_diag %>%
+    select(Statement, Theme = Pillar, Performance, Importance,
+           `Net agreement`, Action) %>%
+    mutate(Importance = round(Importance, 2)) %>%
+    arrange(factor(Action, levels = c("Fix first", "Monitor",
+                                       "Protect strength", "Maintain")),
+            Performance)
+
+  datatable(action_tbl, rownames = FALSE, filter = "top",
+            options = list(pageLength = 8, scrollX = TRUE)) %>%
+    formatStyle("Action",
+                backgroundColor = styleEqual(
+                  c("Fix first", "Protect strength", "Monitor", "Maintain"),
+                  c("#F6D9DA", "#C8E6D9", "#FBEAD2", "#DCE7EF")),
+                fontWeight = "bold")
+} else {
+  datatable(data.frame(Message = "Not enough rating statements for this table"),
+            rownames = FALSE, options = list(dom = "t"))
+}
+```
+
+# Institutions
+
+## Row {data-height="560"}
+
+### Highest Ranked Institutions
+
+```{r}
+if (!is.null(uni_tbl) && nrow(uni_tbl) > 0) {
+
+  top15 <- uni_tbl %>%
+    slice_head(n = 15) %>%
+    mutate(Label = str_trunc(Institution, 38)) %>%
+    arrange(Score) %>%
+    mutate(Label = factor(Label, levels = Label))
+
+  plot_ly(top15,
+          x = ~Score, y = ~Label,
+          type = "bar", orientation = "h",
+          marker = list(color = HIGH, opacity = 0.9,
+                        line = list(color = "white", width = 0.6)),
+          text = ~sprintf("%.1f  (n=%d)", Score, Students),
+          textposition = "outside",
+          textfont = list(size = 11, color = INK),
+          hovertemplate = paste0("<b>%{y}</b><br>Index: %{x:.1f}/100",
+                                 "<br>Respondents: %{customdata}<extra></extra>"),
+          customdata = ~Students) %>%
+    layout(
+      xaxis = list(title = "Overall student index (0-100)",
+                   range = c(0, 100), autorange = FALSE,
+                   dtick = 20, zeroline = FALSE),
+      yaxis = list(title = "", automargin = TRUE, tickfont = list(size = 11)),
+      margin = list(l = 280, r = 90, t = 20, b = 60),
+      bargap = 0.3)
+} else {
+  plotly_empty() %>% layout(title = "Institution data not available in this dataset")
+}
+```
+
+### Lowest Ranked Institutions
+
+```{r}
+if (!is.null(uni_tbl) && nrow(uni_tbl) > 0) {
+
+  bot15 <- uni_tbl %>%
+    slice_tail(n = 15) %>%
+    mutate(Label = str_trunc(Institution, 38)) %>%
+    arrange(Score) %>%
+    mutate(Label = factor(Label, levels = Label))
+
+  plot_ly(bot15,
+          x = ~Score, y = ~Label,
+          type = "bar", orientation = "h",
+          marker = list(color = LOW, opacity = 0.85,
+                        line = list(color = "white", width = 0.6)),
+          text = ~sprintf("%.1f  (n=%d)", Score, Students),
+          textposition = "outside",
+          textfont = list(size = 11, color = INK),
+          hovertemplate = paste0("<b>%{y}</b><br>Index: %{x:.1f}/100",
+                                 "<br>Respondents: %{customdata}<extra></extra>"),
+          customdata = ~Students) %>%
+    layout(
+      xaxis = list(title = "Overall student index (0-100)",
+                   range = c(0, 100), autorange = FALSE,
+                   dtick = 20, zeroline = FALSE),
+      yaxis = list(title = "", automargin = TRUE, tickfont = list(size = 11)),
+      margin = list(l = 280, r = 90, t = 20, b = 60),
+      bargap = 0.3)
+} else {
+  plotly_empty() %>% layout(title = "Institution data not available in this dataset")
+}
+```
+
+## Row {data-height="440"}
+
+### Complete League Table — Every Institution
+
+```{r}
+if (!is.null(uni_tbl) && nrow(uni_tbl) > 0) {
+  datatable(uni_tbl, rownames = FALSE, filter = "top",
+            extensions = "Buttons",
+            options = list(pageLength = 25, scrollX = TRUE, scrollY = "300px",
+                           dom = "Bfrtip",
+                           buttons = c("copy", "csv", "excel"))) %>%
+    formatStyle("Score",
+                background = styleColorBar(c(0, 100), "#CFE3ED"),
+                backgroundSize = "98% 62%",
+                backgroundRepeat = "no-repeat",
+                backgroundPosition = "left",
+                fontWeight = "bold") %>%
+    formatStyle("Rating",
+                backgroundColor = styleEqual(
+                  c("Poor", "Needs work", "Good", "Very good"),
+                  c("#F6D9DA", "#FBEAD2", "#DCEEE7", "#C8E6D9")))
+} else {
+  datatable(data.frame(Message = "Institution data not available in this dataset"),
+            rownames = FALSE, options = list(dom = "t"))
+}
+```
+
+# Fields of Study
+
+## Row {data-height="480"}
+
+### Overall Index by Field of Study
+
+```{r}
+if (!is.null(field_tbl) && nrow(field_tbl) > 0) {
+
+  fplot <- field_tbl %>%
+    slice_head(n = 14) %>%
+    mutate(Label = str_trunc(Field, 34)) %>%
+    arrange(Score) %>%
+    mutate(Label = factor(Label, levels = Label))
+
+  plot_ly(fplot,
+          x = ~Score, y = ~Label,
+          type = "bar", orientation = "h",
+          marker = list(color = ~Score,
+                        colorscale = list(list(0, LOW), list(0.55, MID), list(1, HIGH)),
+                        cmin = 40, cmax = 80, showscale = FALSE,
+                        line = list(color = "white", width = 0.6)),
+          text = ~sprintf("%.1f  (n=%d)", Score, Students),
+          textposition = "outside",
+          textfont = list(size = 11, color = INK),
+          hovertemplate = paste0("<b>%{y}</b><br>Index: %{x:.1f}/100",
+                                 "<br>Students: %{customdata}<extra></extra>"),
+          customdata = ~Students) %>%
+    layout(
+      xaxis = list(title = "Overall student index (0-100)",
+                   range = c(0, 100), autorange = FALSE,
+                   dtick = 20, zeroline = FALSE),
+      yaxis = list(title = "", automargin = TRUE, tickfont = list(size = 11)),
+      margin = list(l = 260, r = 90, t = 20, b = 60),
+      bargap = 0.3)
+} else {
+  plotly_empty() %>% layout(title = "Field of study data not available in this dataset")
+}
+```
+
+## Row {data-height="560"}
+
+### Pillar Strengths and Weaknesses — Eight Largest Fields
+
+```{r}
+if (!is.null(fp_matrix)) {
+
+  fp_wide <- fp_matrix %>%
+    mutate(Field = str_trunc(Field, 26)) %>%
+    select(Field, Pillar, Score) %>%
+    pivot_wider(names_from = Pillar, values_from = Score)
+
+  fmat <- as.matrix(fp_wide[, -1, drop = FALSE])
+  rownames(fmat) <- fp_wide$Field
+
+  zlo <- floor(min(fmat, na.rm = TRUE)) - 2
+  zhi <- ceiling(max(fmat, na.rm = TRUE)) + 2
+
+  plot_ly(x = colnames(fmat), y = rownames(fmat), z = fmat,
+          type = "heatmap",
+          xgap = 4, ygap = 4,
+          colorscale = list(list(0, "#E8A0A6"), list(0.5, "#F4E3B8"), list(1, "#6FAE93")),
+          zmin = zlo, zmax = zhi,
+          text = round(fmat, 0), texttemplate = "%{text}",
+          textfont = list(size = 14, color = INK),
+          hovertemplate = "<b>%{y}</b><br>%{x}<br>Index: %{z:.1f}/100<extra></extra>",
+          colorbar = list(title = list(text = "Index", side = "right"),
+                          len = 0.85, thickness = 14)) %>%
+    layout(xaxis = list(title = "", tickangle = -18, automargin = TRUE,
+                        tickfont = list(size = 11), side = "bottom"),
+           yaxis = list(title = "", automargin = TRUE, tickfont = list(size = 11)),
+           margin = list(l = 220, b = 110, t = 20, r = 30))
+} else {
+  plotly_empty() %>%
+    layout(title = "Not enough field-level data to build this comparison")
+}
+```
+
+# Pillar Analysis
+
+## Row {data-height="560"}
+
+### Pillar Profile
+
+```{r}
+if (!is.null(pillar_stats) && nrow(pillar_stats) >= 3) {
+
+  rad <- pillar_stats %>% arrange(Pillar)
+  theta_vals <- c(rad$Pillar, rad$Pillar[1])
+  r_vals     <- c(rad$Index, rad$Index[1])
+
+  rmin <- max(0, floor((min(rad$Index) - 12) / 10) * 10)
+
+  plot_ly(type = "scatterpolar", mode = "lines+markers",
+          r = r_vals, theta = theta_vals,
+          fill = "toself",
+          fillcolor = "rgba(18,113,90,0.22)",
+          line = list(color = HIGH, width = 2.5),
+          marker = list(size = 8, color = HIGH),
+          hovertemplate = "<b>%{theta}</b><br>Index: %{r:.1f}/100<extra></extra>") %>%
+    layout(
+      polar = list(
+        radialaxis = list(visible = TRUE, range = c(rmin, 100),
+                          tickfont = list(size = 10), angle = 90),
+        angularaxis = list(tickfont = list(size = 11))
+      ),
+      showlegend = FALSE,
+      margin = list(l = 70, r = 70, t = 50, b = 50))
+} else {
+  plotly_empty() %>% layout(title = "Need at least three pillars for a profile chart")
+}
+```
+
+### Typical Score Range per Pillar
+
+```{r}
+if (!is.null(pillar_stats)) {
+
+  rngd <- pillar_stats %>%
+    arrange(Index) %>%
+    mutate(Pillar = factor(Pillar, levels = Pillar))
+
+  pal_r <- pillar_palette[as.character(rngd$Pillar)]
+  pal_r[is.na(pal_r)] <- MUTED
+
+  p <- plot_ly()
+
+  for (i in seq_len(nrow(rngd))) {
+    p <- p %>%
+      add_trace(type = "scatter", mode = "lines",
+                x = c(rngd$Q1[i], rngd$Q3[i]),
+                y = c(as.character(rngd$Pillar[i]), as.character(rngd$Pillar[i])),
+                line = list(color = unname(pal_r[i]), width = 11),
+                opacity = 0.42, showlegend = FALSE, hoverinfo = "skip")
+  }
+
+  p <- p %>%
+    add_trace(type = "scatter", mode = "markers+text",
+              x = rngd$Index, y = as.character(rngd$Pillar),
+              marker = list(size = 17, color = unname(pal_r),
+                            line = list(color = "white", width = 2)),
+              text = sprintf("%.0f", rngd$Index),
+              textposition = "middle center",
+              textfont = list(size = 9, color = "white"),
+              showlegend = FALSE,
+              hovertemplate = paste0("<b>%{y}</b><br>Average: %{x:.1f}",
+                                     "<br>Middle 50%: ", rngd$Q1, " to ", rngd$Q3,
+                                     "<extra></extra>")) %>%
+    layout(
+      xaxis = list(title = "Index score (0-100)", range = c(0, 100), dtick = 20),
+      yaxis = list(title = "", automargin = TRUE, tickfont = list(size = 11),
+                   categoryorder = "array",
+                   categoryarray = as.character(rngd$Pillar)),
+      margin = list(l = 210, r = 50, t = 30, b = 60),
+      annotations = list(
+        list(x = 0.5, y = 1.06, xref = "paper", yref = "paper", showarrow = FALSE,
+             text = "Dot = average · Bar = middle 50% of students",
+             font = list(size = 11, color = MUTED))
+      ))
+  p
+} else {
+  plotly_empty() %>% layout(title = "No pillars available for this chart")
+}
+```
+
+## Row {data-height="480"}
+
+### How Pillars Move Together
+
+```{r}
+if (!is.null(CM)) {
+
+  plot_ly(x = colnames(CM), y = rownames(CM), z = CM,
+          type = "heatmap",
+          xgap = 4, ygap = 4,
+          colorscale = list(list(0, "#F4F7F6"), list(0.5, "#9BC9B8"), list(1, HIGH)),
+          zmin = 0, zmax = 1,
+          text = round(CM, 2), texttemplate = "%{text}",
+          textfont = list(size = 14),
+          hovertemplate = "<b>%{y}</b> vs <b>%{x}</b><br>r = %{z:.2f}<extra></extra>",
+          colorbar = list(title = list(text = "r", side = "right"),
+                          len = 0.85, thickness = 14)) %>%
+    layout(xaxis = list(title = "", tickangle = -18, automargin = TRUE,
+                        tickfont = list(size = 11)),
+           yaxis = list(title = "", automargin = TRUE, tickfont = list(size = 11)),
+           margin = list(l = 210, b = 110, t = 20, r = 30))
+} else {
+  plotly_empty() %>% layout(title = "Need at least two pillars for this chart")
+}
+```
+
+### Male and Female Students Compared
+
+```{r}
+if (!is.null(gender_pillar)) {
+
+  plot_ly(gender_pillar, x = ~Pillar, y = ~Score, color = ~Gender,
+          colors = c(Female = "#8C4A83", Male = "#2C5F8A"),
+          type = "bar",
+          text = ~sprintf("%.0f", Score), textposition = "outside",
+          textfont = list(size = 10, color = INK),
+          hovertemplate = "<b>%{x}</b><br>%{data.name}: %{y:.1f}/100<extra></extra>") %>%
+    layout(barmode = "group",
+           yaxis = list(title = "Index score (0-100)", range = c(0, 100), dtick = 20),
+           xaxis = list(title = "", tickangle = -18, automargin = TRUE,
+                        tickfont = list(size = 10)),
+           legend = list(orientation = "h", y = 1.12),
+           margin = list(l = 60, r = 30, t = 40, b = 110))
+} else {
+  plotly_empty() %>% layout(title = "Gender comparison not available in this dataset")
+}
+```
+
+# Key Insights
+
+## Row {data-height="125"}
+
+### Strongest Pillar
+
+```{r}
+valueBox(ifelse(is.na(best_score), "N/A", paste0(best_pillar, " — ", best_score)),
+         icon = "fa-arrow-up", color = HIGH)
+```
+
+### Weakest Pillar
+
+```{r}
+valueBox(ifelse(is.na(worst_score), "N/A", paste0(worst_pillar, " — ", worst_score)),
+         icon = "fa-arrow-down", color = LOW)
+```
+
+### Students Below Average
+
+```{r}
+valueBox(ifelse(is.na(pct_at_risk), "N/A", paste0(pct_at_risk, "%")),
+         icon = "fa-exclamation-triangle", color = MID)
+```
+
+### Statements to Fix First
+
+```{r}
+valueBox(n_fix_first, icon = "fa-wrench", color = INK)
+```
+
+## Row {data-height="520"}
+
+### Ten Statements With the Greatest Influence on Overall Experience
+
+```{r}
+if (!is.null(item_diag)) {
+
+  imp_top <- item_diag %>%
+    arrange(desc(Importance)) %>%
+    slice_head(n = 10) %>%
+    arrange(Importance) %>%
+    mutate(Statement = factor(Statement, levels = Statement))
+
+  plot_ly(imp_top,
+          x = ~Importance, y = ~Statement,
+          type = "bar", orientation = "h",
+          marker = list(color = ~Performance,
+                        colorscale = list(list(0, LOW), list(0.5, MID), list(1, HIGH)),
+                        cmin = 40, cmax = 80,
+                        colorbar = list(title = list(text = "Score", side = "right"),
+                                        len = 0.85, thickness = 13),
+                        line = list(color = "white", width = 0.6)),
+          text = ~sprintf("%.2f", Importance),
+          textposition = "outside",
+          textfont = list(size = 11, color = INK),
+          hovertemplate = paste0("<b>%{y}</b><br>Influence: %{x:.2f}",
+                                 "<br>Its own score: %{marker.color:.0f}/100<extra></extra>")) %>%
+    layout(
+      xaxis = list(title = "Influence on the overall index (correlation)",
+                   range = c(0, max(imp_top$Importance) * 1.25), zeroline = FALSE),
+      yaxis = list(title = "", automargin = TRUE, tickfont = list(size = 11)),
+      margin = list(l = 310, r = 60, t = 20, b = 60),
+      bargap = 0.3)
+} else {
+  plotly_empty() %>% layout(title = "Not enough rating statements for this chart")
+}
+```
+
+## Row {data-height="475"}
+
+### Where Each Pillar Sits Against the Overall Average
+
+```{r}
+if (!is.null(pillar_stats)) {
+
+  gap_d <- pillar_stats %>%
+    arrange(`Gap to overall`) %>%
+    mutate(Pillar = factor(Pillar, levels = Pillar),
+           Direction = ifelse(`Gap to overall` >= 0, "Above average", "Below average"))
+
+  lim <- max(abs(gap_d$`Gap to overall`), na.rm = TRUE)
+  lim <- ceiling((lim + 2) / 2) * 2
+
+  plot_ly(gap_d, x = ~`Gap to overall`, y = ~Pillar,
+          type = "bar", orientation = "h",
+          color = ~Direction,
+          colors = c(`Above average` = HIGH, `Below average` = LOW),
+          text = ~sprintf("%+.1f", `Gap to overall`),
+          textposition = "outside",
+          textfont = list(size = 11, color = INK),
+          hovertemplate = "<b>%{y}</b><br>Gap: %{x:+.1f} points<extra></extra>") %>%
+    layout(
+      xaxis = list(title = "Points above or below the overall index",
+                   range = c(-lim, lim), zeroline = TRUE,
+                   zerolinewidth = 2, zerolinecolor = "#333333"),
+      yaxis = list(title = "", automargin = TRUE, tickfont = list(size = 11)),
+      legend = list(orientation = "h", y = 1.15),
+      margin = list(l = 210, r = 60, t = 40, b = 60),
+      bargap = 0.35)
+} else {
+  plotly_empty() %>% layout(title = "No pillars available for this chart")
+}
+```
+
+### Sample Size Behind Every Field
+
+```{r}
+if (!is.null(field_tbl) && nrow(field_tbl) > 0) {
+
+  fn <- field_tbl %>%
+    arrange(desc(Students)) %>%
+    slice_head(n = 12) %>%
+    arrange(Students) %>%
+    mutate(Label = str_trunc(Field, 30),
+           Label = factor(Label, levels = Label))
+
+  plot_ly(fn, x = ~Students, y = ~Label,
+          type = "bar", orientation = "h",
+          marker = list(color = "#2C5F8A", opacity = 0.88,
+                        line = list(color = "white", width = 0.6)),
+          text = ~comma(Students), textposition = "outside",
+          textfont = list(size = 11, color = INK),
+          hovertemplate = "<b>%{y}</b><br>%{x} students<extra></extra>") %>%
+    layout(
+      xaxis = list(title = "Number of students", zeroline = FALSE,
+                   range = c(0, max(fn$Students) * 1.22)),
+      yaxis = list(title = "", automargin = TRUE, tickfont = list(size = 11)),
+      margin = list(l = 240, r = 60, t = 20, b = 60),
+      bargap = 0.3)
+} else {
+  plotly_empty() %>% layout(title = "Field of study data not available in this dataset")
+}
+```
+
+# Data Explorer
+
+## Row
+
+### Browse, Sort, Filter and Export the Full Dataset
+
+```{r}
+display_cols <- c("sector", "gender", "age", "university", "field",
+                   PILLARS, "idx_overall")
+display_cols <- display_cols[display_cols %in% names(dat)]
+
+explorer_data <- dat %>% select(all_of(display_cols))
+
+rename_vec <- c(sector = "Sector", gender = "Gender", age = "Age",
+                university = "Institution", field = "Field of study",
+                idx_overall = "Overall index")
+for (v in PILLARS) rename_vec[v] <- LAB[[v]]
+
+names(explorer_data) <- unname(ifelse(names(explorer_data) %in% names(rename_vec),
+                                       rename_vec[names(explorer_data)],
+                                       names(explorer_data)))
+
+num_display <- names(explorer_data)[sapply(explorer_data, is.numeric)]
+
+dt <- datatable(explorer_data, rownames = FALSE, filter = "top",
+                extensions = "Buttons",
+                options = list(pageLength = 15, scrollX = TRUE,
+                               dom = "Bfrtip",
+                               buttons = c("copy", "csv", "excel")))
+
+if (length(num_display) > 0) {
+  dt <- dt %>% formatRound(columns = num_display, digits = 1)
+}
+
+dt
+```
