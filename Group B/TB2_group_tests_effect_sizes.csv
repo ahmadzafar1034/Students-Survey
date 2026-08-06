@@ -1,0 +1,7 @@
+"Comparison","Index","Level_A","N_A","Mean_A","Level_B","N_B","Mean_B","Difference","t","df","p_value","Cohens_d","d_low","d_high","Magnitude","p_FDR","Significant"
+"Sector","Access (Q5_1)","Private",118,68.57,"Public",1657,64.75,3.81,2.038,131.3,0.0436,0.21,0.023,0.397,"Small",0.0436,"Yes"
+"Sector","Overall Index","Private",118,65.76,"Public",1657,61.88,3.88,2.827,130.4,0.005443,0.3,0.113,0.487,"Small",0.008164,"Yes"
+"Sector","Canteen (Q4_1)","Private",118,67.88,"Public",1657,61.33,6.55,3.646,131.1,0.0003826,0.378,0.191,0.565,"Small",0.001148,"Yes"
+"Gender","Access (Q5_1)","Female",1327,65.42,"Male",450,63.87,1.55,1.493,716.8,0.1358,0.085,-0.022,0.192,"Negligible",0.4075,"No"
+"Gender","Overall Index","Female",1327,62.34,"Male",450,61.59,0.76,0.999,694.5,0.318,0.058,-0.049,0.165,"Negligible",0.477,"No"
+"Gender","Canteen (Q4_1)","Female",1327,61.74,"Male",450,61.94,-0.2,-0.198,693.6,0.8433,-0.012,-0.118,0.095,"Negligible",0.8433,"No"

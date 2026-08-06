@@ -1,0 +1,4 @@
+"Index","N","Skewness","Kurtosis","Shapiro_W","Shapiro_p","Outliers_low","Outliers_high","Outlier_pct","Shape"
+"Access (Q5_1)",1777,-0.406,-0.26,0.9772,3.156e-16,0,0,0,"Approx. symmetric"
+"Overall Index",1777,-0.312,-0.146,0.9912,7.783e-09,12,0,0.68,"Approx. symmetric"
+"Canteen (Q4_1)",1777,-0.132,-0.435,0.9912,6.875e-09,0,0,0,"Approx. symmetric"
