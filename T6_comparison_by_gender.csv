@@ -1,0 +1,4 @@
+"Index","N_Male","Mean_Male","N_Female","Mean_Female","Difference","t_stat","p_value","Cohens_d","Significant"
+"Access (Q5_1)",450,63.87,1327,65.42,-1.55,-1.493,0.1358,-0.085,"No"
+"Overall Index",450,61.59,1327,62.34,-0.76,-0.999,0.318,-0.058,"No"
+"Canteen (Q4_1)",450,61.94,1327,61.74,0.2,0.198,0.8433,0.012,"No"

@@ -1,0 +1,4 @@
+"Index","N_Public","Mean_Public","N_Private","Mean_Private","Difference","t_stat","p_value","Cohens_d","Significant"
+"Access (Q5_1)",1657,64.75,118,68.57,-3.81,-2.038,0.0436,-0.21,"Yes"
+"Overall Index",1657,61.88,118,65.76,-3.88,-2.827,0.005443,-0.3,"Yes"
+"Canteen (Q4_1)",1657,61.33,118,67.88,-6.55,-3.646,0.0003826,-0.378,"Yes"
